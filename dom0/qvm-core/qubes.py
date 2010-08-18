@@ -284,6 +284,9 @@ class QubesVm(object):
         else:
             self.session_metrics = None
 
+    def have_savefile(self):
+        return os.path.isfile(self.dir_path+'/savefile')
+
     def update_xen_storage(self):
         self.remove_from_xen_storage()
         self.add_to_xen_storage()
@@ -460,6 +463,45 @@ class QubesVm(object):
         ret = host_metrics_record["memory_free"]
         return long(ret)
 
+    def really_start_via_vm_start(self):
+        try:
+            xend_session.session.xenapi.VM.start (self.session_uuid, True) # Starting a VM paused
+        except XenAPI.Failure:
+            self.refresh_xend_session()
+            xend_session.session.xenapi.VM.start (self.session_uuid, True) # Starting a VM paused
+        return int (xend_session.session.xenapi.VM.get_domid (self.session_uuid))
+
+    def really_start_via_resume(self):
+        retcode = subprocess.call (["/bin/tar", "-C", self.dir_path, "-Sxf", self.dir_path+"/saved_cows.tar"])
+        if retcode != 0:
+            raise OSError ("ERROR: Cannot restore cow files!")
+        xend_session.session.xenapi.VM.restore (self.dir_path+"/savefile", True) # Restore a VM paused
+        xid = int (xend_session.session.xenapi.VM.get_domid (self.session_uuid))
+        retcode = subprocess.call ([
+                "/usr/bin/xenstore-write",
+                "/local/domain/{0}/wait_for_private_img".format(xid), "1"])
+        if retcode != 0:
+            self.force_shutdown()
+            raise OSError ("ERROR: Cannot create the wait_for_private_img key!")
+        return xid
+        
+    def really_start(self):
+        if self.have_savefile():
+            return self.really_start_via_resume()
+        else:
+            return self.really_start_via_vm_start()
+
+    def actions_with_restored_domain(self, xid):
+        retcode = subprocess.call (["/usr/sbin/xm", "block-attach", str(xid), 
+                "file:"+self.dir_path+"/private.img", "/dev/xvdb", "w"])
+        if retcode != 0:
+            self.force_shutdown()
+            raise OSError ("ERROR: Cannot attach the private image!")
+        retcode = subprocess.call (["/usr/sbin/xm", "mem-set", str(xid), "400"]) 
+        if retcode != 0:
+            self.force_shutdown()
+            raise OSError ("ERROR: Cannot mem-set to 400M!")
+            
     def start(self, debug_console = False, verbose = False):
         if dry_run:
             return
@@ -467,9 +509,10 @@ class QubesVm(object):
         if self.is_running():
             raise QubesException ("VM is already running!")
 
-        if verbose:
-            print "--> Rereading the VM's conf file ({0})...".format(self.conf_file)
-        self.update_xen_storage()
+        if not self.have_savefile():
+            if verbose:
+                print "--> Rereading the VM's conf file ({0})...".format(self.conf_file)
+            self.update_xen_storage()
 
         if verbose:
             print "--> Loading the VM (type = {0})...".format(self.type)
@@ -484,13 +527,8 @@ class QubesVm(object):
         if dom0_mem_new < dom0_min_memory:
             raise MemoryError ("ERROR: starting this VM would cause Dom0 memory to go below {0}B".format(dom0_min_memory))
 
-        try:
-            xend_session.session.xenapi.VM.start (self.session_uuid, True) # Starting a VM paused
-        except XenAPI.Failure:
-            self.refresh_xend_session()
-            xend_session.session.xenapi.VM.start (self.session_uuid, True) # Starting a VM paused
 
-        xid = int (xend_session.session.xenapi.VM.get_domid (self.session_uuid))
+        xid = self.really_start()
 
         if verbose:
             print "--> Setting Xen Store info for the VM..."
@@ -520,6 +558,9 @@ class QubesVm(object):
         if verbose:
             print "--> Starting the VM..."
         xend_session.session.xenapi.VM.unpause (self.session_uuid) 
+
+        if self.have_savefile():
+            self.actions_with_restored_domain(xid)
 
         # perhaps we should move it before unpause and fork?
         if debug_console:

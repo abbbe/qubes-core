@@ -26,10 +26,10 @@ start()
 		echo "ERROR: /usr/bin/xenstore-read not found!"
 		exit 1
 	fi
+	BEING_RESTORED=0
 	if xenstore-read qubes_save_request 2>/dev/null ; then
-		ln -sf /home_volatile /home
+		BEING_RESTORED=1
 		possibly_run_save_script 
-		touch /etc/this_is_dvm
 		dmesg -c >/dev/null
 		free | grep Mem: | 
 			(read a b c d ; xenstore-write device/qubes_used_mem $c)
@@ -46,6 +46,13 @@ start()
 		done
 		echo Back to life.
 	fi
+
+	if xenstore-read wait_for_private_img 2>/dev/null ; then
+		while ! [ -e /dev/xvdb ] ; do usleep 100 ; done
+	elif [ $BEING_RESTORED = 1 ] ; then
+		ln -sf /home_volatile /home
+		touch /etc/this_is_dvm
+	fi		
 
 	name=$(/usr/bin/xenstore-read name)
 	if ! [ -f /etc/this_is_dvm ] ; then
