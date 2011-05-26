@@ -33,7 +33,7 @@ void do_notify_progress(long long total, int flag)
 	if (!client_flags[0])
 		return;
 	progress = fopen(client_flags, "w");
-	if (!progress)
+	if (progress < 0)
 		return;
 	fprintf(progress, "%d %lld %s", getpid(), total,
 		flag == PROGRESS_FLAG_DONE ? "DONE" : "BUSY");
@@ -75,7 +75,7 @@ int single_file_processor(char *filename, struct stat *st)
 	if (S_ISREG(mode)) {
 		int ret;
 		fd = open(filename, O_RDONLY);
-		if (!fd)
+		if (fd < 0)
 			gui_fatal("open %s", filename);
 		hdr.filelen = st->st_size;
 		write_headers(&hdr, filename);
